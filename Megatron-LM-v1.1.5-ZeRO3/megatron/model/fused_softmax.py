@@ -118,6 +118,10 @@ class FusedScaleMaskSoftmax(torch.nn.Module):
 
             if self.scale is not None:
                 input = input * self.scale
+            # mask = mask.expand(*input.size())
+            # RuntimeError: Error in execution: Got invalid dimensions for input: inputs_2 for the following indices
+            # index: 0 Got: 1 Expected: 4
+            # index: 1 Got: 1 Expected: 4
             mask_output = self.mask_func(input, mask)
             probs = torch.nn.Softmax(dim=-1)(mask_output)
 

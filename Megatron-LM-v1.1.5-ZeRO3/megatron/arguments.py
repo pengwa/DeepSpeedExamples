@@ -267,6 +267,9 @@ def _add_training_args(parser):
                        help='Run optimizer on CPU')
     group.add_argument('--cpu_torch_adam', action='store_true',
                        help='Use Torch Adam as optimizer on CPU.')
+
+    group.add_argument('--use-ort', action='store_true',
+                       help='Use ONNX Runtime to train and inference.')
     return parser
 
 

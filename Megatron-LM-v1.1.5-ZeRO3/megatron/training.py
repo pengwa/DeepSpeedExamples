@@ -44,6 +44,9 @@ from megatron.utils import report_memory, flops_calculator
 import deepspeed
 from deepspeed.runtime.utils import see_memory_usage
 
+from torch_ort import ORTModule
+from onnxruntime.training.ortmodule import  DebugOptions, LogLevel
+import nvtx
 
 def pretrain(train_valid_test_dataset_provider, model_provider,
              forward_step_func, extra_args_provider=None, args_defaults={}):
@@ -109,21 +112,21 @@ def pretrain(train_valid_test_dataset_provider, model_provider,
                           model, optimizer, lr_scheduler,
                           train_data_iterator, valid_data_iterator)
 
-    if args.do_valid:
-        prefix = 'the end of training for val data'
-        evaluate_and_print_results(prefix, forward_step_func,
-                                   valid_data_iterator, model,
-                                   iteration, False)
+    # if args.do_valid:
+    #     prefix = 'the end of training for val data'
+    #     evaluate_and_print_results(prefix, forward_step_func,
+    #                                valid_data_iterator, model,
+    #                                iteration, False)
 
-    if args.save and iteration != 0:
-        save_checkpoint(iteration, model, optimizer, lr_scheduler)
+    # if args.save and iteration != 0:
+    #     save_checkpoint(iteration, model, optimizer, lr_scheduler)
 
-    if args.do_test:
-        # Run on test data.
-        prefix = 'the end of training for test data'
-        evaluate_and_print_results(prefix, forward_step_func,
-                                   test_data_iterator, model,
-                                   0, True)
+    # if args.do_test:
+    #     # Run on test data.
+    #     prefix = 'the end of training for test data'
+    #     evaluate_and_print_results(prefix, forward_step_func,
+    #                                test_data_iterator, model,
+    #                                0, True)
 
 
 def get_model(model_provider_func):
@@ -143,6 +146,12 @@ def get_model(model_provider_func):
     # Fp16 conversion.
     if args.fp16:
         model = FP16_Module(model)
+
+    if args.use_ort:
+        print('Use ORTModule')
+        from onnxruntime.training.ortmodule._custom_autograd_function import enable_custom_autograd_support
+        enable_custom_autograd_support()
+        model = ORTModule(model, debug_options=DebugOptions(save_onnx=True, onnx_prefix='mega',log_level=LogLevel.VERBOSE))
 
     # Wrap model for distributed training."""
     if args.DDP_impl == 'torch':
@@ -203,7 +212,8 @@ def get_optimizer(model):
                                    dynamic_loss_args={
                                        'scale_window': args.loss_scale_window,
                                        'min_scale': args.min_scale,
-                                       'delayed_shift': args.hysteresis})
+                                       'delayed_shift': args.hysteresis},
+                                    verbose=True)
 
     return optimizer
 
@@ -272,6 +282,7 @@ def setup_model_and_optimizer(model_provider_func):
     return model, optimizer, lr_scheduler
 
 
+@nvtx.annotate(message="backward_step", color="blue")
 def backward_step(optimizer, model, loss):
     """Backward step."""
     args = get_args()
@@ -317,6 +328,14 @@ def backward_step(optimizer, model, loss):
                 optimizer.clip_master_grads(args.clip_grad)
         timers('backward-clip-grad').stop()
 
+import psutil
+def mem_stat(name):
+    vm_stats = psutil.virtual_memory()
+    used_GB = round(((vm_stats.total - vm_stats.available) / (1024**3)), 2)
+    print(f"MEM_STAT=========== {name} MA {round(torch.cuda.memory_allocated() / (1024 * 1024),4 )} MB \
+        Max_MA {round(torch.cuda.max_memory_allocated() / (1024 * 1024),4)} MB \
+        CPU Virtual Memory:  used = {used_GB} GB, percent = {vm_stats.percent}%")
+        # CA {round(torch.cuda.memory_allocated() / (1024 * 1024 * 1024),2)} GB \
 
 def train_step(forward_step_func, data_iterator,
                model, optimizer, lr_scheduler):
@@ -327,30 +346,35 @@ def train_step(forward_step_func, data_iterator,
     #see_memory_usage(f'before forward {model.global_steps}', force=True)
     # Forward model for one step.
     timers('forward').start()
+    mem_stat("before forward")
     loss, loss_reduced = forward_step_func(data_iterator, model, args.curriculum_learning)
+    mem_stat("after forward + loss computation")
     timers('forward').stop()
 
     #see_memory_usage(f'before backward {model.global_steps}', force=True)
     # Calculate gradients, reduce across processes, and clip.
     timers('backward').start()
     backward_step(optimizer, model, loss)
+    mem_stat("before backward")
     timers('backward').stop()
 
 
-    #see_memory_usage(f'before optimizer {model.global_steps}', force=True)
-    # Update parameters.
-    skipped_iter = 0
-    timers('optimizer').start()
-    if args.deepspeed:
-        model.step()
-    else:
-        optimizer.step()
-        # Update learning rate.
-        if not (args.fp16 and optimizer.overflow):
-            lr_scheduler.step()
+    with nvtx.annotate(message="optimizer", color="green"): 
+        #see_memory_usage(f'before optimizer {model.global_steps}', force=True)
+        # Update parameters.
+        skipped_iter = 0
+        timers('optimizer').start()
+        if args.deepspeed:
+            model.step()
         else:
-            skipped_iter = 1
-    timers('optimizer').stop()
+            optimizer.step()
+            mem_stat("after optimizer.step")
+            # Update learning rate.
+            if not (args.fp16 and optimizer.overflow):
+                lr_scheduler.step()
+            else:
+                skipped_iter = 1
+        timers('optimizer').stop()
 
     return loss_reduced, skipped_iter
 
@@ -524,6 +548,11 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
             print_rank_0('rank: {} | time: {} | exiting the program at '
                          'iteration {}'.format(rank, time_str, iteration))
             sys.exit()
+
+        if iteration == 1:
+            print("pengwa - Clear the memory stats after the first step")
+            torch.cuda.reset_max_memory_cached()
+            torch.cuda.reset_max_memory_allocated()
 
     return iteration
 

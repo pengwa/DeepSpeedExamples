@@ -28,6 +28,7 @@ from megatron.training import pretrain
 from megatron.utils import get_ltor_masks_and_position_ids
 from megatron.utils import reduce_losses, get_parameters_in_billions
 
+import nvtx
 
 import deepspeed
 from deepspeed.runtime.utils import see_memory_usage
@@ -54,6 +55,7 @@ def model_provider():
     return model
 
 
+@nvtx.annotate(message="get_batch", color="blue")
 def get_batch(data_iterator):
     """Generate a batch"""
     args = get_args()
@@ -83,8 +85,16 @@ def get_batch(data_iterator):
         args.reset_attention_mask,
         args.eod_mask_loss)
 
-    return tokens, labels, loss_mask, attention_mask, position_ids
+    return tokens, labels, loss_mask.contiguous(), attention_mask.contiguous(), position_ids.contiguous()
 
+import psutil
+def mem_stat(name):
+    vm_stats = psutil.virtual_memory()
+    used_GB = round(((vm_stats.total - vm_stats.available) / (1024**3)), 2)
+    print(f"MEM_STAT=========== {name} MA {round(torch.cuda.memory_allocated() / (1024 * 1024),4 )} MB \
+        Max_MA {round(torch.cuda.max_memory_allocated() / (1024 * 1024),4)} MB \
+        CPU Virtual Memory:  used = {used_GB} GB, percent = {vm_stats.percent}%")
+        # CA {round(torch.cuda.memory_allocated() / (1024 * 1024 * 1024),2)} GB \
 
 def forward_step(data_iterator, model, curriculum_learning=False):
     """Forward step."""
@@ -97,15 +107,21 @@ def forward_step(data_iterator, model, curriculum_learning=False):
         data_iterator)
     timers('batch generator').stop()
     # Forward model.
-    losses = model(tokens, position_ids, attention_mask, labels=labels)
-    if curriculum_learning and args.curriculum_seqlen < args.seq_length:
-        loss_mask = loss_mask[:, :args.curriculum_seqlen].contiguous()
-    loss_mask = loss_mask.view(-1)
-    loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
+    with nvtx.annotate(message="forward", color="green"): 
+        losses = model(tokens, position_ids, attention_mask, labels=labels)
 
-    # Reduce loss for logging.
-    reduced_loss = reduce_losses([loss])
+    mem_stat("after forward, before loss")
 
+    with nvtx.annotate(message="loss", color="purple"): 
+        if curriculum_learning and args.curriculum_seqlen < args.seq_length:
+            loss_mask = loss_mask[:, :args.curriculum_seqlen].contiguous()
+        loss_mask = loss_mask.view(-1)
+        loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()
+
+        # Reduce loss for logging.
+        reduced_loss = reduce_losses([loss])
+
+    mem_stat("after loss")
     return loss, {'lm loss': reduced_loss[0]}
 
 

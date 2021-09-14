@@ -26,15 +26,16 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.parameter import Parameter
 
-try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
-    # Try to use FusedLayerNorm from Apex - this will trigger an error.
-    _ = LayerNorm(8, eps=1e-5)
+# try:
+#     from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
+#     # Try to use FusedLayerNorm from Apex - this will trigger an error.
+#     _ = LayerNorm(8, eps=1e-5)
 
-except Exception as e:
-    print('WARNING: APEX is not installed, using torch.nn.LayerNorm '
-          'instead of apex.normalization.FusedLayerNorm!')
-    from torch.nn import LayerNorm
+# except Exception as e:
+#     print('WARNING: APEX is not installed, using torch.nn.LayerNorm '
+#           'instead of apex.normalization.FusedLayerNorm!')
+#     from torch.nn import LayerNorm
+from torch.nn import LayerNorm
 
 from .initialize import get_model_parallel_rank
 from .initialize import get_model_parallel_world_size
@@ -167,7 +168,12 @@ class VocabParallelEmbedding(torch.nn.Module):
                                       self.sparse)
         # Mask the output embedding.
         if self.model_parallel_size > 1:
-            output_parallel[input_mask, :] = 0.0
+            # output_parallel[input_mask, :] = 0.0
+            # pengwa: this is to workaround Non-ZeRO op inferred shape is not correct, that would make the consumer fail to match all its inputs shapes.
+            # pengwa: this workaround bring 8ms overhead for each forward run, but torch only takes a few us.
+            # RuntimeError: Error in execution: Non-zero status code returned while running Add node. Name:'Add_25' Status Message: Add_25: left operand cannot broadcast on dim 1 LeftShape: {2,58}, RightShape: {511}
+            expanded_mask = input_mask.unsqueeze(-1).expand(output_parallel.size())
+            output_parallel = output_parallel.masked_fill(expanded_mask, 0.0)
         # Reduce across all the model parallel GPUs.
         output = reduce_from_model_parallel_region(output_parallel)
         return output
