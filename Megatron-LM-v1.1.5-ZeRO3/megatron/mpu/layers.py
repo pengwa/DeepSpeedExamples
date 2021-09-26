@@ -167,7 +167,12 @@ class VocabParallelEmbedding(torch.nn.Module):
                                       self.sparse)
         # Mask the output embedding.
         if self.model_parallel_size > 1:
-            output_parallel[input_mask, :] = 0.0
+            # output_parallel[input_mask, :] = 0.0
+            # this is to workaround Non-ZeRO op inferred shape is not correct, that would make the consumer fail to match all its inputs shapes.
+            # this workaround bring some overhead for each forward run.
+            # RuntimeError: Error in execution: Non-zero status code returned while running Add node. Name:'Add_25' Status Message: Add_25: left operand cannot broadcast on dim 1 LeftShape: {2,58}, RightShape: {511}
+            expanded_mask = input_mask.unsqueeze(-1).expand(output_parallel.size())
+            output_parallel = output_parallel.masked_fill(expanded_mask, 0.0)
         # Reduce across all the model parallel GPUs.
         output = reduce_from_model_parallel_region(output_parallel)
         return output

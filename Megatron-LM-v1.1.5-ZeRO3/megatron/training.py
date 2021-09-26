@@ -144,6 +144,17 @@ def get_model(model_provider_func):
     if args.fp16:
         model = FP16_Module(model)
 
+    if args.use_ort:
+        print('Use ORTModule')
+        from onnxruntime.training.ortmodule._custom_autograd_function import enable_custom_autograd_support
+        from onnxruntime.training.ortmodule.experimental.json_config import load_from_json
+        from torch_ort import ORTModule
+        import os
+        enable_custom_autograd_support()
+        model = ORTModule(model)
+        # load from json once.
+        path_to_json = os.path.join(os.getcwd(), 'ortmodule.json')
+        load_from_json(model, path_to_json)
     # Wrap model for distributed training."""
     if args.DDP_impl == 'torch':
         i = torch.cuda.current_device()
@@ -184,8 +195,8 @@ def get_optimizer(model):
                                        weight_decay=args.weight_decay)
     else:
         # Use torch Adam instead of Fused Adam from NVIDIA which seems to have some issue.
-        #optimizer = Adam(param_groups,
-        optimizer = torch.optim.AdamW(param_groups,
+        #optimizer = torch.optim.AdamW(param_groups,
+        optimizer = Adam(param_groups,
                          lr=args.lr,
                          weight_decay=args.weight_decay,
                          betas=(args.adam_beta1, args.adam_beta2),
@@ -204,6 +215,9 @@ def get_optimizer(model):
                                        'scale_window': args.loss_scale_window,
                                        'min_scale': args.min_scale,
                                        'delayed_shift': args.hysteresis})
+        from onnxruntime.training.ortmodule.optimizer.fp16_optimizer import FP16_Optimizer as ORT_FP16_Optimizer
+        optimizer = ORT_FP16_Optimizer(optimizer, get_horizontal_model_parallel_rank=mpu.get_model_parallel_rank, 
+                                       get_horizontal_model_parallel_group=mpu.get_model_parallel_group)
 
     return optimizer
 

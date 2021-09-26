@@ -73,8 +73,9 @@ class FP16_Module(MegatronModule):
     def forward(self, *inputs, **kwargs):
         return fp16_to_fp32(self.module(*(fp32_to_fp16(inputs)), **kwargs))
 
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        return self.module.state_dict(destination, prefix, keep_vars)
+    # disable override here, otherwise, some weight name mismatch after Pytorch export to ONNX.
+    # def state_dict(self, destination=None, prefix='', keep_vars=False):
+    #     return self.module.state_dict(destination, prefix, keep_vars)
 
     def state_dict_for_save_checkpoint(self, destination=None, prefix='',
                                        keep_vars=False):
