@@ -27,7 +27,7 @@ from megatron.checkpointing import get_checkpoint_version
 from megatron.model.fused_softmax import FusedScaleMaskSoftmax
 from megatron.model.fused_bias_gelu import bias_gelu_impl
 from megatron.model.utils import openai_gelu, erf_gelu
-
+import nvtx
 import deepspeed
 
 # flags required to enable jit fusion kernels
@@ -259,6 +259,7 @@ class ParallelSelfAttention(MegatronModule):
         
         return mixed_layer
 
+    @nvtx.annotate(message="ParallelSelfAttention forward", color="red")
     def forward(self, hidden_states, attention_mask, layer_past=None,
                 get_key_value=False):
         # hidden_states: [sq, b, h]
@@ -268,7 +269,8 @@ class ParallelSelfAttention(MegatronModule):
         # =====================
 
         # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
-        mixed_x_layer, _ = self.query_key_value(hidden_states)
+        with nvtx.annotate(message="ParallelSelfAttention query_key_value", color="red"):
+            mixed_x_layer, _ = self.query_key_value(hidden_states)
 
         checkpoint_version = get_checkpoint_version()
         if checkpoint_version is not None:
@@ -329,10 +331,13 @@ class ParallelSelfAttention(MegatronModule):
             device=torch.cuda.current_device())
 
         # Raw attention scores. [b * np, sq, sk]
-        matmul_result = torch.baddbmm(matmul_result, 
-            query_layer.transpose(0, 1),   # [b * np, sq, hn]
-            key_layer.transpose(0,1).transpose(1, 2),  #[b * np, hn, sk]
-            beta=0.0, alpha=(1.0/self.norm_factor))
+        with nvtx.annotate(message="ParallelSelfAttention torch.baddbmm", color="red"):
+            matmul_result = torch.baddbmm(matmul_result, 
+                query_layer.transpose(0, 1),   # [b * np, sq, hn]
+                key_layer.transpose(0,1).transpose(1, 2),  #[b * np, hn, sk]
+                beta=0.0, alpha=(1.0/self.norm_factor))
+            # Raw attention scores. [b * np, sq, sk]
+        # matmul_result = torch.matmul(query_layer.transpose(0, 1), key_layer.transpose(0,1).transpose(1, 2)) * (1.0/self.norm_factor) #+ 0.0 * matmul_result
 
         # change view to [b, np, sq, sk]
         attention_scores = matmul_result.view(*output_size)

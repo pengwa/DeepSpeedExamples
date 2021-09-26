@@ -98,6 +98,8 @@ gpt_options=" \
         --eval-iters 100 \
         --fp16 \
 "
+#	--bias-dropout-fusion \
+#--bias-gelu-fusion \
 #        --scattered-embeddings \
 ort_options=""
 log_postfix_name="pt"

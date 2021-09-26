@@ -45,7 +45,7 @@ import deepspeed
 from deepspeed.runtime.utils import see_memory_usage
 
 from torch_ort import ORTModule
-from onnxruntime.training.ortmodule import  DebugOptions, LogLevel
+from onnxruntime.training.ortmodule.optimizer.fp16_optimizer import FP16_Optimizer as ORT_FP16_Optimizer
 import nvtx
 
 def pretrain(train_valid_test_dataset_provider, model_provider,
@@ -150,9 +150,13 @@ def get_model(model_provider_func):
     if args.use_ort:
         print('Use ORTModule')
         from onnxruntime.training.ortmodule._custom_autograd_function import enable_custom_autograd_support
+        from onnxruntime.training.ortmodule.experimental.json_config import load_from_json
+        import os
         enable_custom_autograd_support()
-        model = ORTModule(model, debug_options=DebugOptions(save_onnx=True, onnx_prefix='mega',log_level=LogLevel.VERBOSE))
-
+        model = ORTModule(model)
+        # load from json once.
+        path_to_json = os.path.join(os.getcwd(), 'ortmodule.json')
+        load_from_json(model, path_to_json)
     # Wrap model for distributed training."""
     if args.DDP_impl == 'torch':
         i = torch.cuda.current_device()
@@ -193,8 +197,9 @@ def get_optimizer(model):
                                        weight_decay=args.weight_decay)
     else:
         # Use torch Adam instead of Fused Adam from NVIDIA which seems to have some issue.
-        #optimizer = Adam(param_groups,
-        optimizer = torch.optim.AdamW(param_groups,
+
+        #optimizer = torch.optim.AdamW(param_groups,
+        optimizer = Adam(param_groups,
                          lr=args.lr,
                          weight_decay=args.weight_decay,
                          betas=(args.adam_beta1, args.adam_beta2),
@@ -214,6 +219,8 @@ def get_optimizer(model):
                                        'min_scale': args.min_scale,
                                        'delayed_shift': args.hysteresis},
                                     verbose=True)
+        # optimizer = ORT_FP16_Optimizer(optimizer, get_horizontal_model_parallel_rank=mpu.get_model_parallel_rank, 
+        #                                get_horizontal_model_parallel_group=mpu.get_model_parallel_group)
 
     return optimizer
 
@@ -325,7 +332,8 @@ def backward_step(optimizer, model, loss):
             if not args.fp16:
                 mpu.clip_grad_norm(model.parameters(), args.clip_grad)
             else:
-                optimizer.clip_master_grads(args.clip_grad)
+                with nvtx.annotate(message="mpu clip_grad_norm", color="red"): 
+                    optimizer.clip_master_grads(args.clip_grad)
         timers('backward-clip-grad').stop()
 
 import psutil
@@ -496,6 +504,8 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
     report_memory_flag = True
     data_parallel_size = mpu.get_data_parallel_world_size()
     global_batch_size = args.batch_size * data_parallel_size
+    import time
+    ms_start = time.time() * 1000
     while iteration < args.train_iters and \
         (args.train_tokens is None or args.tokens < args.train_tokens):
         loss_dict, skipped_iter = train_step(forward_step_func,
@@ -554,6 +564,10 @@ def train(forward_step_func, model, optimizer, lr_scheduler,
             torch.cuda.reset_max_memory_cached()
             torch.cuda.reset_max_memory_allocated()
 
+        if iteration == 50:
+            ms_start = time.time() * 1000
+    ms_end = time.time() * 1000
+    print("End to end latency (ms): ", str(ms_end - ms_start), str(float(ms_end - ms_start) / 50.0))
     return iteration
 
 
