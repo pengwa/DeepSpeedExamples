@@ -270,6 +270,8 @@ def _add_training_args(parser):
 
     group.add_argument('--use-ort', action='store_true',
                        help='Use ONNX Runtime to train and inference.')
+    group.add_argument('--use-ort-opt', action='store_true',
+                       help='Use ONNX Runtime to optimize optimizer if possible.')
     return parser
 
 

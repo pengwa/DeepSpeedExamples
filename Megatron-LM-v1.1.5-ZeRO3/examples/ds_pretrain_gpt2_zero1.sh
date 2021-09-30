@@ -37,7 +37,7 @@ CHECKPOINT_PATH=checkpoints/gpt2_345m_ds
 script_path=$(realpath $0)
 script_dir=$(dirname $script_path)
 if [[ -z $1 ]]; then
-       config_json="$script_dir/ds_zero_stage_0_config.json"
+       config_json="$script_dir/ds_zero_stage_1_config.json"
 
        # offloads to NVMe
        #config_json="$script_dir/ds_zero_stage_infinity_config.json"
@@ -66,7 +66,7 @@ TILE_DIM=1
 
 
 # Megatron Model Parallelism
-LOGDIR="tboard-raw-gpt2" #tboard-zero3/stage${stage}-lazyscatter-${NUM_LAYERS}l_${HIDDEN_SIZE}h_${NUM_WORKERS}n_${NUM_GPUS_PER_WORKER}g_${MP_SIZE}mp_${BATCHSIZE}b"
+LOGDIR="tboard-zero1/stage${stage}-lazyscatter-${NUM_LAYERS}l_${HIDDEN_SIZE}h_${NUM_WORKERS}n_${NUM_GPUS_PER_WORKER}g_${MP_SIZE}mp_${BATCHSIZE}b"
 
 
 gpt_options=" \
@@ -120,7 +120,7 @@ fi
 #
 #        --split-transformers \
         #--tensorboard-dir ${LOGDIR}
-
+stage=1
 deepspeed_options=" \
                 --deepspeed \
                 --deepspeed_config ${config_json} \
@@ -171,9 +171,9 @@ tile_opt="${tile_opt} \
         --tile-factor=${TILE_DIM}"
 fi
 
-full_options="${gpt_options} ${ort_options}"
+full_options="${gpt_options} ${deepspeed_options} ${ort_options}"
 
-prefix="/home/pengwa/nsight-systems-2021.3.1/bin/nsys profile -o "$NUM_LAYERS"_"$MP_SIZE"_layers_%p_${log_postfix_name} -t cuda,nvtx "
+prefix="/home/pengwa/nsight-systems-2021.3.1/bin/nsys profile -o zero1_"$NUM_LAYERS"_"$MP_SIZE"_layers_%p_${log_postfix_name} -t cuda,nvtx "
 run_cmd="$prefix deepspeed --num_nodes ${NUM_WORKERS} --num_gpus ${NUM_GPUS_PER_WORKER}  pretrain_gpt2.py ${@:2} ${full_options}"
 echo ${run_cmd}
 eval ${run_cmd}

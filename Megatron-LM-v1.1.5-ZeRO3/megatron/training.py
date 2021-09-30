@@ -45,7 +45,7 @@ import deepspeed
 from deepspeed.runtime.utils import see_memory_usage
 
 from torch_ort import ORTModule
-from onnxruntime.training.ortmodule.optimizer.fp16_optimizer import FP16_Optimizer as ORT_FP16_Optimizer
+from onnxruntime.training.ortmodule.experimental.optimizer import FP16_Optimizer as ORT_FP16_Optimizer
 import nvtx
 
 def pretrain(train_valid_test_dataset_provider, model_provider,
@@ -219,8 +219,6 @@ def get_optimizer(model):
                                        'min_scale': args.min_scale,
                                        'delayed_shift': args.hysteresis},
                                     verbose=True)
-        # optimizer = ORT_FP16_Optimizer(optimizer, get_horizontal_model_parallel_rank=mpu.get_model_parallel_rank, 
-        #                                get_horizontal_model_parallel_group=mpu.get_model_parallel_group)
 
     return optimizer
 
@@ -272,6 +270,22 @@ def setup_model_and_optimizer(model_provider_func):
             lr_scheduler=lr_scheduler,
             mpu=mpu,
             dist_init_required=False)
+
+        if args.use_ort:
+            print('Use ORTModule + DeepSpeed')
+            from onnxruntime.training.ortmodule._custom_autograd_function import enable_custom_autograd_support
+            from onnxruntime.training.ortmodule.experimental.json_config import load_from_json
+            import os
+            enable_custom_autograd_support()
+            model = ORTModule(model)
+            # load from json once.
+            path_to_json = os.path.join(os.getcwd(), 'ortmodule.json')
+            load_from_json(model, path_to_json)
+
+    if args.fp16 and args.use_ort_opt:
+        optimizer = ORT_FP16_Optimizer(optimizer, get_horizontal_model_parallel_rank=mpu.get_model_parallel_rank, 
+                                       get_horizontal_model_parallel_group=mpu.get_model_parallel_group)
+
     if args.load is not None:
         args.iteration = load_checkpoint(model, optimizer, lr_scheduler)
     else:
